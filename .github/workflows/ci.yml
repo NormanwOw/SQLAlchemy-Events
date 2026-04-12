@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test_db
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=5
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/test_db
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: |
+          uv venv
+          uv sync --dev
+          source .venv/bin/activate
+          uv pip install pytest pytest-asyncio asyncpg python-dotenv
+      - name: Wait for Postgres
+        run: |
+          for i in {1..30}; do
+            if pg_isready -h localhost -p 5432 -U postgres; then
+              echo "Postgres is ready!"
+              exit 0
+            fi
+            echo "Waiting for postgres..."
+            sleep 1
+          done
+          echo "Postgres did not start in time"
+          exit 1
+
+      - name: Run tests
+        run: |
+          source .venv/bin/activate
+          pytest -v -s
