@@ -1,3 +1,5 @@
+import inspect
+from pathlib import Path
 from typing import Callable, Type
 from sqlalchemy.orm import DeclarativeBase
 
@@ -18,8 +20,20 @@ class SaEventHandler:
 
         def decorator(func: Callable):
             trig_name = f'sa_{model.__tablename__}_{event.lower()}_notify'
-
-            self.__handlers.setdefault(trig_name, []).append(func)
+            func_path = inspect.getsourcefile(func) or inspect.getfile(func)
+            func_path = Path(func_path)
+            func_path_name = f'{func_path.parent.name}/{func_path.name}/{func.__name__}'
+            funcs = self.__handlers.get(trig_name)
+            if funcs:
+                for handler in funcs:
+                    handler_path = inspect.getsourcefile(handler) or inspect.getfile(handler)
+                    handler_path = Path(handler_path)
+                    handler_path_name = f'{handler_path.parent.name}/{handler_path.name}/{handler.__name__}'
+                    if func_path_name == handler_path_name:
+                        continue
+                    funcs[trig_name].append(handler)
+            else:
+                self.__handlers[trig_name] = [func]
 
             return func
 

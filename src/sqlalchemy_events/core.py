@@ -43,19 +43,31 @@ class SQLAlchemyEvents:
         autodiscover(self.autodiscover_paths)
         handlers = get_event_handlers()
         if not handlers:
-            self.logger.info('[SQLAlchemyEvents] No handlers found')
+            if self.logger:
+                self.logger.info('[SQLAlchemyEvents] No handlers found')
             return
         res_handlers = []
         for handlers_list in handlers.values():
             res_handlers.extend(handlers_list)
+
+        filtered_handlers = []
+        handler_paths = set()
         for handler in res_handlers:
             file_path = inspect.getsourcefile(handler) or inspect.getfile(handler)
+
             file_func = Path(file_path)
             file_name = file_func.name
-            self.logger.info(f'[SQLAlchemyEvents] Registered handler {handler.__name__} '
-                             f'from {file_func.parent.name}/{file_name}')
+            handler_path = f'{file_func} {handler.__name__}'
+            if handler_path in handler_paths:
+                continue
 
-        return res_handlers
+            handler_paths.add(handler_path)
+            filtered_handlers.append(handler)
+            if self.logger:
+                self.logger.info(f'[SQLAlchemyEvents] Registered handler {handler.__name__} '
+                                 f'from {file_func.parent.name}/{file_name}')
+
+        return filtered_handlers
 
     async def __start_listen(self, event_strategy: SaEventStrategy):
         if isinstance(self.engine, AsyncEngine):
@@ -71,9 +83,9 @@ class SQLAlchemyEvents:
                     conn=conn,
                     logger=self.logger
                 )
-                if self.logger:
-                    self.logger.info('[SQLAlchemyEvents] Start listening')
-                await driver_conn.add_listener('sqlalchemy_events', event_strategy.callback.handle)
+            if self.logger:
+                self.logger.info('[SQLAlchemyEvents] Start listening')
+            await driver_conn.add_listener('sqlalchemy_events', event_strategy.callback.handle)
             return
 
         elif isinstance(self.engine, Engine):
@@ -85,19 +97,28 @@ class SQLAlchemyEvents:
 
                 if not hasattr(driver_conn, 'add_listener'):
                     raise RuntimeError(sync_engine_error)
-                result = driver_conn.add_listener('sqlalchemy_events', event_strategy.callback.handle)
+            result = driver_conn.add_listener('sqlalchemy_events', event_strategy.callback.handle)
 
-                if not asyncio.iscoroutine(result):
-                    raise RuntimeError(sync_engine_error)
-                await event_strategy.init_triggers(
-                    model_list=self.base.__subclasses__(),
-                    conn=conn,
-                    logger=self.logger
-                )
-                if self.logger:
-                    self.logger.info('[SQLAlchemyEvents] Start listening')
-                await result
+            if not asyncio.iscoroutine(result):
+                raise RuntimeError(sync_engine_error)
+            await event_strategy.init_triggers(
+                model_list=self.base.__subclasses__(),
+                conn=conn,
+                logger=self.logger
+            )
+            if self.logger:
+                self.logger.info('[SQLAlchemyEvents] Start listening')
+            await result
 
             return
 
         raise TypeError('[SQLAlchemyEvents] engine must be AsyncEngine or Engine')
+
+    async def __listen_loop(self, driver_conn):
+        while True:
+            try:
+                await driver_conn.wait_for_notify()
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f'[SQLAlchemyEvents] listener crashed: {e}')
+                await asyncio.sleep(1)
