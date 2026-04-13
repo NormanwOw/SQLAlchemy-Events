@@ -2,7 +2,7 @@ import sys
 import types
 
 from sqlalchemy_events.discovery import autodiscover
-from sqlalchemy_events import sa_event_handler
+from sqlalchemy_events import sa_insert_handler, sa_update_handler, sa_delete_handler
 from sqlalchemy_events.registry import get_event_handlers
 from tests.test_models import UserModel
 
@@ -98,15 +98,15 @@ def test_module_without_submodules(monkeypatch):
     cleanup_modules(module_name)
 
 
-@sa_event_handler.on_insert(UserModel)
+@sa_insert_handler(UserModel)
 async def insert_handler(): ...
 
 
-@sa_event_handler.on_update(UserModel)
+@sa_update_handler(UserModel)
 async def update_handler(): ...
 
 
-@sa_event_handler.on_delete(UserModel)
+@sa_delete_handler(UserModel)
 async def delete_handler(): ...
 
 
@@ -117,13 +117,13 @@ async def test_discover_handlers():
     for key, handler_list in handlers.items():
         assert len(handler_list) == 1
         if 'insert' in key:
-            assert handler_list[0].__name__ == 'insert_handler'
+            assert handler_list[0].func.__name__ == 'insert_handler'
             result_handlers.extend(handler_list)
         if 'update' in key:
-            assert handler_list[0].__name__ == 'update_handler'
+            assert handler_list[0].func.__name__ == 'update_handler'
             result_handlers.extend(handler_list)
         if 'delete' in key:
-            assert handler_list[0].__name__ == 'delete_handler'
+            assert handler_list[0].func.__name__ == 'delete_handler'
             result_handlers.extend(handler_list)
 
     assert len(result_handlers) == len(handlers)

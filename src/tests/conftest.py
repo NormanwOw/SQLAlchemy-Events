@@ -32,12 +32,12 @@ async def prepared_db(engine):
             await conn.execute(text('CREATE SCHEMA public'))
             await conn.run_sync(Base.metadata.create_all)
 
-        listener = SQLAlchemyEvents(
+        SQLAlchemyEvents(
             base=Base,
             engine=engine,
             autodiscover_paths=['tests']
         )
-        await listener.init()
+        await asyncio.sleep(0.1)
         IS_DB = True
 
 

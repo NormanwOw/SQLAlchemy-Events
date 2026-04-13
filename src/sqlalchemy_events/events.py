@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 from .callbacks_strategies.base import SaEventsCallbacksStrategy
 from .callbacks_strategies.postgres_callback import PostgresCallback
-from .enums import Dialect, SaEvent
+from .types import Dialect, SaEvent
 from .init_triggers_strategies.base import InitTriggersStrategy
 from .init_triggers_strategies.postgres_init_triggers import PostgresInitTriggers
 

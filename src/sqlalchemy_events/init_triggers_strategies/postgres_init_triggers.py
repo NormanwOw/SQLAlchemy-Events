@@ -3,24 +3,35 @@ from typing import Type
 from sqlalchemy import text
 from sqlalchemy.orm import DeclarativeBase
 
-from ..enums import SaEvent
+from ..types import SaEvent
 from .base import InitTriggersStrategy
 
 
 class PostgresInitTriggers(InitTriggersStrategy):
 
     async def __call__(self, model_list: list[Type[DeclarativeBase]], conn, logger):
-        await conn.execute(
-            text("""
-                 CREATE OR REPLACE FUNCTION sqlalchemy_events() 
-                 RETURNS trigger AS $$ 
-                 BEGIN PERFORM pg_notify(
-                    'sqlalchemy_events', json_build_object(
-                    'table', TG_TABLE_NAME, 'event', TG_OP, 'trigger', TG_NAME
-                 )::text); 
-                 RETURN NEW; END; $$ LANGUAGE plpgsql;
-                 """)
-        )
+        for sa_event in SaEvent:
+            sa_event = sa_event.lower()
+            await conn.execute(
+                text(f"""
+                        CREATE OR REPLACE FUNCTION sqlalchemy_events_notify_{sa_event}()
+                        RETURNS trigger AS $$
+                        DECLARE
+                            payload json;
+                        BEGIN
+                            payload := json_build_object(
+                                'op', '{sa_event}',
+                                'table', TG_TABLE_NAME,
+                                'rows', array_agg(n.id)
+                            )
+                            FROM {'old_rows' if sa_event.upper() == SaEvent.DELETE else 'new_rows'} n;
+                        
+                            PERFORM pg_notify('sqlalchemy_events', payload::text);
+                            RETURN NULL;
+                        END;
+                        $$ LANGUAGE plpgsql;
+                     """)
+            )
 
         for cls in model_list:
             events = getattr(cls, '__events__', None)
@@ -69,14 +80,17 @@ class PostgresInitTriggers(InitTriggersStrategy):
 
                 added_events.append(event)
                 await conn.execute(
-                    text(f"DROP TRIGGER IF EXISTS {trig_name} ON {table_name};")
+                    text(f'DROP TRIGGER IF EXISTS {trig_name} ON {table_name};')
                 )
 
                 await conn.execute(
                     text(f"""
-                         CREATE TRIGGER {trig_name}
-                         AFTER {event} ON {table_name}
-                         FOR EACH ROW EXECUTE FUNCTION sqlalchemy_events();
+                            CREATE TRIGGER {trig_name}
+                            AFTER {event} ON {table_name}
+                            REFERENCING {'OLD' if event == SaEvent.DELETE else 'NEW'} 
+                            TABLE AS {'old_rows' if event == SaEvent.DELETE else 'new_rows'}
+                            FOR EACH STATEMENT
+                            EXECUTE FUNCTION sqlalchemy_events_notify_{l_event}();
                          """)
                 )
 

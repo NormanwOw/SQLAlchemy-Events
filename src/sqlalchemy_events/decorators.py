@@ -1,4 +1,4 @@
-from .enums import SaEvent
+from .types import SaEvent
 
 
 def with_events(events: list[SaEvent]):

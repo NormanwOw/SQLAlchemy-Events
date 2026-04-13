@@ -27,8 +27,9 @@ class SQLAlchemyEvents:
         self.engine = engine
         self.autodiscover_paths = autodiscover_paths
         self.logger = logger
+        asyncio.create_task(self.__init())
 
-    async def init(self) -> None:
+    async def __init(self) -> None:
         if not await self.__find_handlers():
             return
 
@@ -53,18 +54,18 @@ class SQLAlchemyEvents:
         filtered_handlers = []
         handler_paths = set()
         for handler in res_handlers:
-            file_path = inspect.getsourcefile(handler) or inspect.getfile(handler)
+            file_path = inspect.getsourcefile(handler.func) or inspect.getfile(handler.func)
 
             file_func = Path(file_path)
             file_name = file_func.name
-            handler_path = f'{file_func} {handler.__name__}'
+            handler_path = f'{file_func} {handler.func.__name__}'
             if handler_path in handler_paths:
                 continue
 
             handler_paths.add(handler_path)
             filtered_handlers.append(handler)
             if self.logger:
-                self.logger.info(f'[SQLAlchemyEvents] Registered handler {handler.__name__} '
+                self.logger.info(f'[SQLAlchemyEvents] Registered handler {handler.func.__name__} '
                                  f'from {file_func.parent.name}/{file_name}')
 
         return filtered_handlers

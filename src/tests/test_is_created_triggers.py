@@ -26,13 +26,17 @@ async def test_is_created_triggers(session):
 
 
 async def test_is_created_function(session):
+    func_names = [
+        'sqlalchemy_events_notify_insert',
+        'sqlalchemy_events_notify_update',
+        'sqlalchemy_events_notify_delete'
+    ]
     result = await session.execute(
         text("""
-             SELECT EXISTS (SELECT 1
-                            FROM pg_proc
-                            WHERE proname = 'sqlalchemy_events')
-             """)
+             SELECT COUNT(*) FROM pg_proc WHERE proname = ANY (:func_names)
+             """),
+        {'func_names': func_names}
     )
-    exists = result.scalar()
+    count = result.scalar()
 
-    assert exists is True
+    assert count == len(func_names)

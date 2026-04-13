@@ -1,8 +1,14 @@
 from .core import SQLAlchemyEvents
 from .decorators import with_events
-from .enums import SaEvent
-from .handler import sa_event_handler
+from .handlers import sa_insert_handler, sa_update_handler, sa_delete_handler
+from .types import SaEvent
 
-__all__ = ['SQLAlchemyEvents', 'sa_event_handler', 'with_events', 'SaEvent']
-__version__ = '0.1.0'
-
+__all__ = [
+    'SQLAlchemyEvents',
+    'sa_insert_handler',
+    'sa_update_handler',
+    'sa_delete_handler',
+    'with_events',
+    'SaEvent'
+]
+__version__ = '0.2.0'
