@@ -3,7 +3,7 @@ import logging
 
 class DefaultLogger:
     def __init__(self) -> None:
-        self.__logger = logging.getLogger()
+        self.__logger = logging.getLogger('SQLAlchemyEvents')
         self.__logger.setLevel(logging.INFO)
 
         if not self.__logger.handlers:

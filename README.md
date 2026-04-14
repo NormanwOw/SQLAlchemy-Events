@@ -74,7 +74,6 @@ ___
 session.py
 ```python
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
 from config import DATABASE_URL
 
 engine = create_async_engine(DATABASE_URL)
@@ -92,10 +91,11 @@ from session import engine
 
 
 async def main():
-    SQLAlchemyEvents(
+    sa_events = SQLAlchemyEvents(
         engine=engine,
         autodiscover_paths=['services']
     )
+    await sa_events()
     while True:
         await asyncio.sleep(9999)
 
@@ -143,16 +143,25 @@ If provided, the library will log internal lifecycle events such as:
 **Example:**
 ```python
 import logging
+import asyncio
+from sqlalchemy_events import SQLAlchemyEvents
+from session import engine
 
 logger = logging.getLogger('sqlalchemy_events')
 logger.setLevel(logging.INFO)
 
-SQLAlchemyEvents(
-    base=Base,
-    engine=engine,
-    autodiscover_paths=['services'],
-    logger=logger
-)
+async def main():
+    sa_events = SQLAlchemyEvents(
+        engine=engine,
+        autodiscover_paths=['services'],
+        logger=logger
+    )
+    await sa_events()
+    while True:
+        await asyncio.sleep(9999)
+
+if __name__ == '__main__':
+    asyncio.run(main())
 ```
 
 ## How it works

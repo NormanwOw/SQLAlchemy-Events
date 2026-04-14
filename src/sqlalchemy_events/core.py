@@ -30,9 +30,8 @@ class SQLAlchemyEvents:
         self.autodiscover_paths = autodiscover_paths
         self.logger = logger or DefaultLogger() if verbose else None
         self.verbose = verbose
-        asyncio.create_task(self.__init())
 
-    async def __init(self) -> None:
+    async def __call__(self) -> None:
         if not isinstance(self.engine, (AsyncEngine, Engine)):
             raise RuntimeError(
                 '[SQLAlchemyEvents] \'engine\' must be an instance of '

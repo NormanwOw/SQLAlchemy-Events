@@ -1,6 +1,8 @@
 import sys
 import types
 
+import pytest
+
 from sqlalchemy_events.discovery import autodiscover
 from sqlalchemy_events import sa_insert_handler, sa_update_handler, sa_delete_handler
 from sqlalchemy_events.registry import get_event_handlers
@@ -127,3 +129,20 @@ async def test_discover_handlers():
             result_handlers.extend(handler_list)
 
     assert len(result_handlers) == len(handlers)
+
+
+def test_invalid_autodiscover_path():
+    with pytest.raises(ModuleNotFoundError):
+        autodiscover(['not.existing.module'])
+
+
+def test_autodiscover_no_duplicates():
+    modules = autodiscover(['tests', 'tests.test_autodiscover.py'])
+
+    names = [m.__name__ for m in modules]
+    assert len(names) == len(set(names))
+
+
+def test_autodiscover_import_error_is_handled():
+    with pytest.raises(Exception):
+        autodiscover(['app.broken_module'])

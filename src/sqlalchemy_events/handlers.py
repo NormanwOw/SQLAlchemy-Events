@@ -10,7 +10,7 @@ from .types import Handler
 
 
 def __inner(func: Callable, sa_event: SaEvent, model: Type[DeclarativeBase]):
-    if not isinstance(model, type) or not issubclass(model, DeclarativeBase):
+    if not issubclass(model, DeclarativeBase):
         raise RuntimeError('Model must inherit from DeclarativeBase')
 
     event_handlers = get_event_handlers()

@@ -5,19 +5,33 @@ from types import ModuleType
 from typing import Iterable, List
 
 
-def autodiscover(paths: Iterable[str]) -> List[ModuleType]:
+def autodiscover(paths: Iterable[str | Path]) -> List[ModuleType]:
     modules: List[ModuleType] = []
+    seen: set[str] = set()
 
-    for path in paths:
-        if isinstance(path, Path):
-            path = str(path)
-            path = path.replace('\\', '.')
-
-        path = path.strip('/').replace('/', '.').lstrip('.')
-        module = importlib.import_module(path)
+    def add_module(module: ModuleType):
+        if module.__name__ in seen:
+            return
+        seen.add(module.__name__)
         modules.append(module)
 
-        if not hasattr(module, '__path__'):
+    for path in paths:
+        is_file = False
+
+        if isinstance(path, Path):
+            is_file = path.suffix == '.py'
+            path = str(path)
+
+        if isinstance(path, str) and path.endswith('.py'):
+            is_file = True
+            path = path[:-3]
+
+        path = path.replace('\\', '.').replace('/', '.').lstrip('.')
+
+        module = importlib.import_module(path)
+        add_module(module)
+
+        if is_file or not hasattr(module, '__path__'):
             continue
 
         for _, module_name, _ in pkgutil.walk_packages(
@@ -25,6 +39,6 @@ def autodiscover(paths: Iterable[str]) -> List[ModuleType]:
             module.__name__ + '.',
         ):
             submodule = importlib.import_module(module_name)
-            modules.append(submodule)
+            add_module(submodule)
 
     return modules
