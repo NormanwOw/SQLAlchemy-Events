@@ -1,5 +1,6 @@
 import importlib
 import pkgutil
+from pathlib import Path
 from types import ModuleType
 from typing import Iterable, List
 
@@ -8,6 +9,11 @@ def autodiscover(paths: Iterable[str]) -> List[ModuleType]:
     modules: List[ModuleType] = []
 
     for path in paths:
+        if isinstance(path, Path):
+            path = str(path)
+            path = path.replace('\\', '.')
+
+        path = path.strip('/').replace('/', '.').lstrip('.')
         module = importlib.import_module(path)
         modules.append(module)
 

@@ -33,7 +33,6 @@ async def prepared_db(engine):
             await conn.run_sync(Base.metadata.create_all)
 
         SQLAlchemyEvents(
-            base=Base,
             engine=engine,
             autodiscover_paths=['tests']
         )

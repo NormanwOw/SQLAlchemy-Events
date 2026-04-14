@@ -88,13 +88,11 @@ main.py
 ```python
 import asyncio
 from sqlalchemy_events import SQLAlchemyEvents
-from models import Base
 from session import engine
 
 
 async def main():
     SQLAlchemyEvents(
-        base=Base,
         engine=engine,
         autodiscover_paths=['services']
     )
@@ -111,21 +109,22 @@ if __name__ == '__main__':
 The SQLAlchemyEvents class accepts the following parameters:
 ```python
 SQLAlchemyEvents(
-    base,
     engine,
     autodiscover_paths,
-    logger=None
+    logger=None,
+    verbose=True
 )
 ```
 
 Parameters:
-* **base** - SQLAlchemy declarative base class used to discover mapped models.
 * **engine** - SQLAlchemy Engine or AsyncEngine instance.
 * **autodiscover_paths** - List of Python module paths where event handlers are defined.
 These modules are automatically imported so that decorators such as 
-`@sa_insert_handler`, `@sa_update_handler`, `@sa_delete_handler` are executed. 
+`@sa_insert_handler`, `@sa_update_handler`, `@sa_delete_handler` are executed.  
 **Example:**  
 `autodiscover_paths=["services", "app.handlers"]`
+
+* **verbose** - Enables detailed logging output. When set to True, the library will log additional informational and warning messages to help with debugging and configuration.
 
 ### Important:
 

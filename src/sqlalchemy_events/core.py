@@ -1,16 +1,19 @@
 import asyncio
 import logging
+from collections import defaultdict
 from pathlib import Path
-from typing import Optional, Type, Union
+from typing import Optional, Union
 import inspect
 
 from sqlalchemy import Engine
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.orm import DeclarativeBase
 
+from .default_logger import DefaultLogger
 from .discovery import autodiscover
 from .events import SaEventStrategy, sa_events_strategy
 from .registry import get_event_handlers
+from .types import Handler
 from .utils import dialect_resolver
 
 
@@ -18,19 +21,35 @@ class SQLAlchemyEvents:
 
     def __init__(
         self,
-        base: Type[DeclarativeBase],
         engine: Union[AsyncEngine, Engine],
-        autodiscover_paths: list[str],
-        logger: Optional[logging.Logger] = None
+        autodiscover_paths: list[str | Path],
+        logger: Optional[logging.Logger] = None,
+        verbose: bool = True
     ) -> None:
-        self.base = base
         self.engine = engine
         self.autodiscover_paths = autodiscover_paths
-        self.logger = logger
+        self.logger = logger or DefaultLogger() if verbose else None
+        self.verbose = verbose
         asyncio.create_task(self.__init())
 
     async def __init(self) -> None:
-        if not await self.__find_handlers():
+        if not isinstance(self.engine, (AsyncEngine, Engine)):
+            raise RuntimeError(
+                '[SQLAlchemyEvents] \'engine\' must be an instance of '
+                'sqlalchemy.Engine or sqlalchemy.ext.asyncio.AsyncEngine.'
+            )
+
+        if not self.autodiscover_paths:
+            if self.verbose:
+                self.logger.warning(
+                    '[SQLAlchemyEvents] No autodiscover paths specified. '
+                    'Please provide at least one module path (e.g., \'app.handlers\') '
+                    'in \'autodiscover_paths\' during initialization.'
+                )
+            return
+
+        handlers = await self.__find_handlers()
+        if not handlers:
             return
 
         dialect = dialect_resolver(self.engine)
@@ -38,13 +57,13 @@ class SQLAlchemyEvents:
         if not event_strategy:
             raise RuntimeError(f'[SQLAlchemyEvents] Unsupported database {dialect}. '
                                f'This library supports only {', '.join(sa_events_strategy.keys())}')
-        await self.__start_listen(event_strategy)
+        await self.__start_listen(event_strategy, handlers)
 
     async def __find_handlers(self):
         autodiscover(self.autodiscover_paths)
         handlers = get_event_handlers()
         if not handlers:
-            if self.logger:
+            if self.verbose:
                 self.logger.info('[SQLAlchemyEvents] No handlers found')
             return
         res_handlers = []
@@ -53,6 +72,7 @@ class SQLAlchemyEvents:
 
         filtered_handlers = []
         handler_paths = set()
+        handlers_qty = defaultdict(int)
         for handler in res_handlers:
             file_path = inspect.getsourcefile(handler.func) or inspect.getfile(handler.func)
 
@@ -64,13 +84,28 @@ class SQLAlchemyEvents:
 
             handler_paths.add(handler_path)
             filtered_handlers.append(handler)
-            if self.logger:
-                self.logger.info(f'[SQLAlchemyEvents] Registered handler {handler.func.__name__} '
-                                 f'from {file_func.parent.name}/{file_name}')
+            handlers_qty[f'{file_func.parent.name}/{file_name}'] += 1
+
+        if self.verbose:
+            for path, qty in handlers_qty.items():
+                self.logger.info(f'[SQLAlchemyEvents] Registered {qty} {'handler' if qty == 1 else 'handlers'} '
+                                 f'from \'{path}\'')
 
         return filtered_handlers
 
-    async def __start_listen(self, event_strategy: SaEventStrategy):
+    async def __start_listen(self, event_strategy: SaEventStrategy, handlers: list[Handler]):
+        base = None
+        try:
+            model = handlers[0].args['model']
+            for cls in model.__mro__:
+                if issubclass(cls, DeclarativeBase) and cls is not DeclarativeBase:
+                    base = cls
+
+            if not base:
+                raise Exception
+        except Exception:
+            raise RuntimeError('[SQLAlchemyEvents] No Base found in Registered handlers')
+
         if isinstance(self.engine, AsyncEngine):
             async with self.engine.connect() as conn:
                 raw_conn = await conn.get_raw_connection()
@@ -80,11 +115,11 @@ class SQLAlchemyEvents:
                     raise RuntimeError('[SQLAlchemyEvents] Driver does not support LISTEN/NOTIFY')
 
                 await event_strategy.init_triggers(
-                    model_list=self.base.__subclasses__(),
+                    model_list=base.__subclasses__(),
                     conn=conn,
                     logger=self.logger
                 )
-            if self.logger:
+            if self.verbose:
                 self.logger.info('[SQLAlchemyEvents] Start listening')
             await driver_conn.add_listener('sqlalchemy_events', event_strategy.callback.handle)
             return
@@ -103,11 +138,11 @@ class SQLAlchemyEvents:
             if not asyncio.iscoroutine(result):
                 raise RuntimeError(sync_engine_error)
             await event_strategy.init_triggers(
-                model_list=self.base.__subclasses__(),
+                model_list=base.__subclasses__(),
                 conn=conn,
                 logger=self.logger
             )
-            if self.logger:
+            if self.verbose:
                 self.logger.info('[SQLAlchemyEvents] Start listening')
             await result
 
@@ -120,6 +155,6 @@ class SQLAlchemyEvents:
             try:
                 await driver_conn.wait_for_notify()
             except Exception as e:
-                if self.logger:
+                if self.verbose:
                     self.logger.error(f'[SQLAlchemyEvents] listener crashed: {e}')
                 await asyncio.sleep(1)

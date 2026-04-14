@@ -10,6 +10,9 @@ from .types import Handler
 
 
 def __inner(func: Callable, sa_event: SaEvent, model: Type[DeclarativeBase]):
+    if not isinstance(model, type) or not issubclass(model, DeclarativeBase):
+        raise RuntimeError('Model must inherit from DeclarativeBase')
+
     event_handlers = get_event_handlers()
     trig_name = f'sa_{model.__tablename__}_{sa_event.lower()}_notify'
     func_path = inspect.getsourcefile(func) or inspect.getfile(func)
