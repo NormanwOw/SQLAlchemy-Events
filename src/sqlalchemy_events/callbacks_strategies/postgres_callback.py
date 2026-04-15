@@ -66,4 +66,4 @@ class PostgresCallback(SaEventsCallbacksStrategy):
                     )
                 )
 
-        await asyncio.gather(*tasks)
+        return await asyncio.gather(*tasks)

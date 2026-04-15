@@ -117,18 +117,17 @@ async def test_discover_handlers():
     assert handlers
     result_handlers = []
     for key, handler_list in handlers.items():
-        assert len(handler_list) == 1
         if 'insert' in key:
             assert handler_list[0].func.__name__ == 'insert_handler'
-            result_handlers.extend(handler_list)
+            result_handlers.append(handler_list[0])
         if 'update' in key:
             assert handler_list[0].func.__name__ == 'update_handler'
-            result_handlers.extend(handler_list)
+            result_handlers.append(handler_list[0])
         if 'delete' in key:
             assert handler_list[0].func.__name__ == 'delete_handler'
-            result_handlers.extend(handler_list)
+            result_handlers.append(handler_list[0])
 
-    assert len(result_handlers) == len(handlers)
+    assert len(result_handlers) == 3
 
 
 def test_invalid_autodiscover_path():

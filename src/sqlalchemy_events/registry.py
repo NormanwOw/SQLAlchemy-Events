@@ -11,5 +11,5 @@ if _GLOBAL_KEY not in sys.modules:
 _registry = sys.modules[_GLOBAL_KEY]
 
 
-def get_event_handlers():
+def get_event_handlers() -> dict:
     return _registry.handlers

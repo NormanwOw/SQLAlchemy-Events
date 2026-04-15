@@ -1,4 +1,3 @@
-import asyncio
 import os
 
 import pytest_asyncio
@@ -7,6 +6,8 @@ from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy import text
 from sqlalchemy_events import SQLAlchemyEvents
+from sqlalchemy_events.events import sa_events_strategy
+from sqlalchemy_events.utils import dialect_resolver
 
 from tests.test_models import Base
 
@@ -46,3 +47,9 @@ async def session(engine):
     async with async_session() as session:
         yield session
         await session.rollback()
+
+
+@pytest_asyncio.fixture
+async def mock_callback(engine):
+    dialect = dialect_resolver(engine)
+    yield sa_events_strategy[dialect].callback
