@@ -9,30 +9,45 @@ from .base import InitTriggersStrategy
 
 class PostgresInitTriggers(InitTriggersStrategy):
 
-    async def __call__(self, model_list: list[Type[DeclarativeBase]], conn, logger):
-        result = await conn.execute(text("SELECT current_schema()"))
-        schema = result.scalar()
+    async def __call__(self, model_list: list[Type[DeclarativeBase]], schema: str, conn, logger):
+        if not schema:
+            result = await conn.execute(text("SELECT current_schema()"))
+            schema = result.scalar()
         for sa_event in SaEvent:
             sa_event = sa_event.lower()
+
+            rows_table = (
+                'old_rows'
+                if sa_event.upper() == SaEvent.DELETE
+                else 'new_rows'
+            )
+
             await conn.execute(
                 text(f"""
-                        CREATE OR REPLACE FUNCTION sqlalchemy_events_notify_{sa_event}()
-                        RETURNS trigger AS $$
-                        DECLARE
-                            payload json;
-                        BEGIN
-                            payload := json_build_object(
-                                'op', '{sa_event}',
-                                'table', TG_full_name,
-                                'rows', array_agg(n.id)
-                            )
-                            FROM {'old_rows' if sa_event.upper() == SaEvent.DELETE else 'new_rows'} n;
-                        
-                            PERFORM pg_notify('sqlalchemy_events', payload::text);
-                            RETURN NULL;
-                        END;
-                        $$ LANGUAGE plpgsql;
-                     """)
+                    CREATE OR REPLACE FUNCTION {schema}.sqlalchemy_events_notify_{sa_event}()
+                    RETURNS trigger
+                    LANGUAGE plpgsql
+                    AS $$
+                    DECLARE
+                        payload json;
+                    BEGIN
+                        SELECT json_build_object(
+                            'op', '{sa_event}',
+                            'table', format('%I', TG_TABLE_NAME),
+                            'rows', array_agg(n.id)
+                        )
+                        INTO payload
+                        FROM {rows_table} n;
+
+                        PERFORM pg_notify(
+                            'sqlalchemy_events',
+                            payload::text
+                        );
+
+                        RETURN NULL;
+                    END;
+                    $$;
+                """)
             )
 
         for cls in model_list:
@@ -70,7 +85,7 @@ class PostgresInitTriggers(InitTriggersStrategy):
             added_events = []
             for event in sorted(events):
                 l_event = event.lower()
-                trig_name = f'sa_{schema}_{table_name}_{l_event}_notify'
+                trig_name = f'sa_{table_name}_{l_event}_notify'
 
                 if trig_name in existing_triggers:
                     continue
@@ -87,7 +102,7 @@ class PostgresInitTriggers(InitTriggersStrategy):
                             REFERENCING {'OLD' if event == SaEvent.DELETE else 'NEW'} 
                             TABLE AS {'old_rows' if event == SaEvent.DELETE else 'new_rows'}
                             FOR EACH STATEMENT
-                            EXECUTE FUNCTION sqlalchemy_events_notify_{l_event}();
+                            EXECUTE FUNCTION {schema}.sqlalchemy_events_notify_{l_event}();
                          """)
                 )
 

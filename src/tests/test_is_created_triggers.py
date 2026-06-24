@@ -3,9 +3,9 @@ from sqlalchemy import text
 
 async def test_is_created_triggers(session):
     trigger_names = [
-        'sa_public_users_delete_notify',
-        'sa_public_users_insert_notify',
-        'sa_public_users_update_notify',
+        'sa_users_delete_notify',
+        'sa_users_insert_notify',
+        'sa_users_update_notify',
     ]
     result = await session.execute(text('SELECT current_schema()'))
     schema = result.scalar()

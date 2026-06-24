@@ -23,11 +23,13 @@ class SQLAlchemyEvents:
         self,
         engine: Union[AsyncEngine, Engine],
         autodiscover_paths: list[str | Path],
+        schema: str = '',
         logger: Optional[logging.Logger] = None,
         verbose: bool = True
     ) -> None:
         self.engine = engine
         self.autodiscover_paths = autodiscover_paths
+        self.schema = schema
         self.logger = logger or DefaultLogger() if verbose else None
         self.verbose = verbose
 
@@ -115,6 +117,7 @@ class SQLAlchemyEvents:
 
                 await event_strategy.init_triggers(
                     model_list=base.__subclasses__(),
+                    schema=self.schema,
                     conn=conn,
                     logger=self.logger
                 )
@@ -138,6 +141,7 @@ class SQLAlchemyEvents:
                 raise RuntimeError(sync_engine_error)
             await event_strategy.init_triggers(
                 model_list=base.__subclasses__(),
+                schema=self.schema,
                 conn=conn,
                 logger=self.logger
             )

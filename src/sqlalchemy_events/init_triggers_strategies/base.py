@@ -7,7 +7,7 @@ from sqlalchemy.orm import DeclarativeBase
 class InitTriggersStrategy(ABC):
 
     @abstractmethod
-    async def __call__(self, model_list: list[Type[DeclarativeBase]], conn, logger):
+    async def __call__(self, model_list: list[Type[DeclarativeBase]], schema: str, conn, logger):
         raise NotImplementedError
 
 

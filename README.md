@@ -111,6 +111,7 @@ The SQLAlchemyEvents class accepts the following parameters:
 SQLAlchemyEvents(
     engine,
     autodiscover_paths,
+    schema='',
     logger=None,
     verbose=True
 )
@@ -124,6 +125,7 @@ These modules are automatically imported so that decorators such as
 **Example:**  
 `autodiscover_paths=["services", "app.handlers"]`
 
+* **schema** - Custom database schema
 * **verbose** - Enables detailed logging output. When set to True, the library will log additional informational and warning messages to help with debugging and configuration.
 
 ### Important:
