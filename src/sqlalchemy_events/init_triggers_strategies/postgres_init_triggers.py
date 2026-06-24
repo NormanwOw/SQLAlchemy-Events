@@ -10,6 +10,8 @@ from .base import InitTriggersStrategy
 class PostgresInitTriggers(InitTriggersStrategy):
 
     async def __call__(self, model_list: list[Type[DeclarativeBase]], conn, logger):
+        result = await conn.execute(text("SELECT current_schema()"))
+        schema = result.scalar()
         for sa_event in SaEvent:
             sa_event = sa_event.lower()
             await conn.execute(
@@ -21,7 +23,7 @@ class PostgresInitTriggers(InitTriggersStrategy):
                         BEGIN
                             payload := json_build_object(
                                 'op', '{sa_event}',
-                                'table', TG_TABLE_NAME,
+                                'table', TG_full_name,
                                 'rows', array_agg(n.id)
                             )
                             FROM {'old_rows' if sa_event.upper() == SaEvent.DELETE else 'new_rows'} n;
@@ -40,23 +42,18 @@ class PostgresInitTriggers(InitTriggersStrategy):
                 continue
 
             table_name = cls.__tablename__
-
+            full_name = f'{schema}.{table_name}'
             existing_triggers = set()
 
             table_exists = await conn.scalar(
-                text("""
-                     SELECT EXISTS (SELECT 1
-                                    FROM pg_class
-                                    WHERE relname = :tbl
-                                      AND relkind = 'r')
-                     """),
-                {'tbl': table_name},
+                text('SELECT to_regclass(:tbl) IS NOT NULL'),
+                {'tbl': full_name},
             )
             if not table_exists:
                 if logger:
                     logger.warning(f"[SQLAlchemyEvents] {cls.__name__} has "
                                    f"{'event' if len(events) == 1 else 'events'} {', '.join(events)}, "
-                                   f"but relation '{table_name}' does not exist")
+                                   f"but relation '{full_name}' does not exist")
                 continue
 
             if table_exists:
@@ -67,26 +64,26 @@ class PostgresInitTriggers(InitTriggersStrategy):
                                 AND NOT tgisinternal
                               """)
 
-                for row in await conn.execute(tg_sql, {'tbl': table_name}):
+                for row in await conn.execute(tg_sql, {'tbl': full_name}):
                     existing_triggers.add(row[0])
 
             added_events = []
             for event in sorted(events):
                 l_event = event.lower()
-                trig_name = f'sa_{table_name}_{l_event}_notify'
+                trig_name = f'sa_{schema}_{table_name}_{l_event}_notify'
 
                 if trig_name in existing_triggers:
                     continue
 
                 added_events.append(event)
                 await conn.execute(
-                    text(f'DROP TRIGGER IF EXISTS {trig_name} ON {table_name};')
+                    text(f'DROP TRIGGER IF EXISTS {trig_name} ON {full_name};')
                 )
 
                 await conn.execute(
                     text(f"""
                             CREATE TRIGGER {trig_name}
-                            AFTER {event} ON {table_name}
+                            AFTER {event} ON {full_name}
                             REFERENCING {'OLD' if event == SaEvent.DELETE else 'NEW'} 
                             TABLE AS {'old_rows' if event == SaEvent.DELETE else 'new_rows'}
                             FOR EACH STATEMENT
@@ -97,7 +94,7 @@ class PostgresInitTriggers(InitTriggersStrategy):
             if added_events and logger:
                 logger.info(
                     f"Detected added {'event' if len(added_events) == 1 else 'events'} "
-                    f"{', '.join(added_events)} for table '{table_name}'"
+                    f"{', '.join(added_events)} for table '{full_name}'"
                 )
 
         await conn.commit()
