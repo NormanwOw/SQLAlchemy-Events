@@ -1,16 +1,11 @@
 import asyncio
 import json
 import inspect
-import signal
-import sys
 
 from .base import SaEventsCallbacksStrategy
 from ..registry import get_event_handlers
 from ..types import Handler
 from ..utils import _process_pool
-
-
-signal.signal(signal.SIGINT, lambda sig, frame: sys.exit(0))
 
 
 class PostgresCallback(SaEventsCallbacksStrategy):
