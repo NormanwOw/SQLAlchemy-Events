@@ -167,11 +167,6 @@ class SQLAlchemyEvents:
                 logger=self.logger,
             )
 
-        if self.verbose:
-            self.logger.info(
-                '[SQLAlchemyEvents] Database triggers initialized'
-            )
-
         self._stop_event.clear()
 
         self._listener_task = asyncio.create_task(
@@ -201,15 +196,18 @@ class SQLAlchemyEvents:
         )
 
     async def __listen_loop(
-        self,
-        event_strategy: SaEventStrategy,
+            self,
+            event_strategy: SaEventStrategy,
     ) -> None:
-        retry_delay = self.INITIAL_RETRY_DELAY
+        retry_delay = 2
+        log_interval = 30
+        last_log_time = 0.0
+        was_connected = False
 
         while not self._stop_event.is_set():
             try:
                 await self.__listen_once(event_strategy)
-                retry_delay = self.INITIAL_RETRY_DELAY
+
             except asyncio.CancelledError:
                 raise
 
@@ -217,39 +215,49 @@ class SQLAlchemyEvents:
                 if self._stop_event.is_set():
                     break
 
-                if self.verbose:
-                    self.logger.error(
-                        f'[SQLAlchemyEvents] Listener crashed: {ex} '
-                        f'Reconnect in {retry_delay} seconds'
+                now = asyncio.get_running_loop().time()
+
+                if was_connected:
+                    was_connected = False
+                    last_log_time = now
+
+                elif (
+                        self.verbose
+                        and now - last_log_time >= log_interval
+                ):
+                    self.logger.warning(
+                        f'[SQLAlchemyEvents] '
+                        f'Unable to connect publisher: {ex}'
+                    )
+                    self.logger.warning(
+                        '[SQLAlchemyEvents] '
+                        'Trying to connect publisher every 2 seconds...'
                     )
 
-                try:
-                    await asyncio.wait_for(
-                        self._stop_event.wait(),
-                        timeout=retry_delay,
-                    )
-                except asyncio.TimeoutError:
-                    pass
+                    last_log_time = now
 
-                retry_delay = min(
-                    retry_delay * 2,
-                    self.MAX_RETRY_DELAY,
+            if self._stop_event.is_set():
+                break
+
+            await self.engine.dispose()
+
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(),
+                    timeout=retry_delay,
                 )
+            except asyncio.TimeoutError:
+                pass
 
         if self.verbose:
             self.logger.info(
-                '[SQLAlchemyEvents] Listener stopped'
+                '[SQLAlchemyEvents] Publisher stopped'
             )
 
     async def __listen_once(
-            self,
-            event_strategy: SaEventStrategy,
+        self,
+        event_strategy: SaEventStrategy,
     ) -> None:
-        if self.verbose:
-            self.logger.info(
-                '[SQLAlchemyEvents] Connecting to PostgreSQL listener'
-            )
-
         async with self.engine.connect() as conn:
             raw_conn = await conn.get_raw_connection()
             driver_conn = raw_conn.driver_connection
@@ -260,50 +268,40 @@ class SQLAlchemyEvents:
                     'LISTEN/NOTIFY'
                 )
 
-            await driver_conn.add_listener(
-                self.CHANNEL,
-                event_strategy.callback.handle,
+            disconnected = asyncio.Event()
+
+            def on_disconnect(connection) -> None:
+                disconnected.set()
+
+            driver_conn.add_termination_listener(
+                on_disconnect
             )
-
-            if self.verbose:
-                self.logger.info(
-                    f'[SQLAlchemyEvents] LISTEN {self.CHANNEL} started',
-                )
-
+            listener_registered = False
             try:
-                await self._wait_connection(driver_conn)
+                await driver_conn.add_listener(
+                    self.CHANNEL,
+                    event_strategy.callback.handle,
+                )
+                listener_registered = True
+                if self.verbose:
+                    self.logger.info(
+                        '[SQLAlchemyEvents] Publisher connected'
+                    )
+
+                await disconnected.wait()
+                if not self._stop_event.is_set():
+                    raise ConnectionError('Database connection lost')
 
             finally:
-                await self.__remove_listener(
-                    driver_conn,
-                    event_strategy,
+                driver_conn.remove_termination_listener(
+                    on_disconnect
                 )
 
-    async def _wait_connection(self, driver_conn) -> None:
-        while not self._stop_event.is_set():
-            await asyncio.sleep(1)
-
-            if driver_conn.is_closed():
-                raise ConnectionError(
-                    '[SQLAlchemyEvents] PostgreSQL listener connection closed'
-                )
-
-    async def __wait_for_notify(
-        self,
-        driver_conn,
-    ) -> None:
-        while not self._stop_event.is_set():
-            try:
-                await driver_conn.wait_for_notify()
-
-            except asyncio.CancelledError:
-                raise
-
-            except Exception as e:
-                raise ConnectionError(
-                    '[SQLAlchemyEvents] PostgreSQL connection '
-                    f'lost while waiting for NOTIFY: {e}'
-                ) from e
+                if listener_registered:
+                    await self.__remove_listener(
+                        driver_conn,
+                        event_strategy,
+                    )
 
     async def __remove_listener(
         self,
@@ -331,5 +329,5 @@ class SQLAlchemyEvents:
         except Exception as e:
             if self.verbose:
                 self.logger.warning(
-                    f'[SQLAlchemyEvents] Failed to remove listener: {e}',
+                    f'[SQLAlchemyEvents] Failed to remove publisher: {e}',
                 )
