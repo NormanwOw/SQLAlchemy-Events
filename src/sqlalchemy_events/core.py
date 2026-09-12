@@ -6,9 +6,13 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Optional, Union
 
-from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy import Engine
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    create_async_engine,
+)
+from sqlalchemy.pool import NullPool
+from sqlalchemy.orm import DeclarativeBase
 
 from .default_logger import DefaultLogger
 from .discovery import autodiscover
@@ -22,8 +26,8 @@ class SQLAlchemyEvents:
 
     CHANNEL = 'sqlalchemy_events'
 
-    INITIAL_RETRY_DELAY = 1
-    MAX_RETRY_DELAY = 30
+    RETRY_DELAY = 2
+    LOG_INTERVAL = 30
 
     def __init__(
         self,
@@ -41,6 +45,7 @@ class SQLAlchemyEvents:
 
         self._stop_event = asyncio.Event()
         self._listener_task: asyncio.Task | None = None
+        self._listener_engine: AsyncEngine | None = None
 
     async def __call__(self) -> None:
         if not isinstance(self.engine, (AsyncEngine, Engine)):
@@ -59,6 +64,12 @@ class SQLAlchemyEvents:
                 )
             return
 
+        if not isinstance(self.engine, AsyncEngine):
+            raise RuntimeError(
+                '[SQLAlchemyEvents] Sync Engine driver does not support '
+                'async LISTEN/NOTIFY. Use AsyncEngine with asyncpg'
+            )
+
         handlers = await self.__find_handlers()
 
         if not handlers:
@@ -75,24 +86,35 @@ class SQLAlchemyEvents:
                 f'{", ".join(sa_events_strategy.keys())}'
             )
 
-        await self.__start_listen(event_strategy, handlers)
+        self.__create_listener_engine()
+
+        try:
+            await self.__start_listen(
+                event_strategy,
+                handlers,
+            )
+        except Exception:
+            await self.__dispose_listener_engine()
+            raise
 
     async def stop(self) -> None:
         self._stop_event.set()
 
-        if self._listener_task is None:
-            return
+        listener_task = self._listener_task
 
-        self._listener_task.cancel()
+        if listener_task is not None:
+            listener_task.cancel()
 
-        try:
-            await self._listener_task
-        except asyncio.CancelledError:
-            pass
-        finally:
-            self._listener_task = None
+            try:
+                await listener_task
+            except asyncio.CancelledError:
+                pass
+            finally:
+                self._listener_task = None
 
-    async def __find_handlers(self):
+        await self.__dispose_listener_engine()
+
+    async def __find_handlers(self) -> list[Handler] | None:
         autodiscover(self.autodiscover_paths)
 
         handlers = get_event_handlers()
@@ -102,16 +124,16 @@ class SQLAlchemyEvents:
                 self.logger.info(
                     '[SQLAlchemyEvents] No handlers found'
                 )
-            return
+            return None
 
-        res_handlers = []
+        res_handlers: list[Handler] = []
 
         for handlers_list in handlers.values():
             res_handlers.extend(handlers_list)
 
-        filtered_handlers = []
-        handler_paths = set()
-        handlers_qty = defaultdict(int)
+        filtered_handlers: list[Handler] = []
+        handler_paths: set[str] = set()
+        handlers_qty: defaultdict[str, int] = defaultdict(int)
 
         for handler in res_handlers:
             file_path = (
@@ -146,6 +168,25 @@ class SQLAlchemyEvents:
 
         return filtered_handlers
 
+    def __create_listener_engine(self) -> None:
+        if self._listener_engine is not None:
+            return
+
+        self._listener_engine = create_async_engine(
+            self.engine.url,
+            poolclass=NullPool,
+        )
+
+    async def __dispose_listener_engine(self) -> None:
+        listener_engine = self._listener_engine
+
+        if listener_engine is None:
+            return
+
+        self._listener_engine = None
+
+        await listener_engine.dispose()
+
     async def __start_listen(
         self,
         event_strategy: SaEventStrategy,
@@ -153,10 +194,11 @@ class SQLAlchemyEvents:
     ) -> None:
         base = self.__get_base(handlers)
 
-        if not isinstance(self.engine, AsyncEngine):
+        listener_engine = self._listener_engine
+
+        if listener_engine is None:
             raise RuntimeError(
-                '[SQLAlchemyEvents] Sync Engine driver does not support '
-                'async LISTEN/NOTIFY. Use AsyncEngine with asyncpg'
+                '[SQLAlchemyEvents] Listener engine is not initialized'
             )
 
         async with self.engine.connect() as conn:
@@ -169,6 +211,9 @@ class SQLAlchemyEvents:
 
         self._stop_event.clear()
 
+        if self._listener_task is not None:
+            return
+
         self._listener_task = asyncio.create_task(
             self.__listen_loop(event_strategy),
             name='sqlalchemy-events-listener',
@@ -180,33 +225,36 @@ class SQLAlchemyEvents:
     ):
         try:
             model = handlers[0].args['model']
+
             for cls in model.__mro__:
                 if (
-                        isinstance(cls, type)
-                        and issubclass(cls, DeclarativeBase)
-                        and DeclarativeBase in cls.__bases__
+                    isinstance(cls, type)
+                    and issubclass(cls, DeclarativeBase)
+                    and DeclarativeBase in cls.__bases__
                 ):
                     return cls
 
         except Exception:
-            raise RuntimeError('[SQLAlchemyEvents] No Base found in Registered handlers')
+            raise RuntimeError(
+                '[SQLAlchemyEvents] No Base found in Registered handlers'
+            )
 
         raise RuntimeError(
             '[SQLAlchemyEvents] No Base found in Registered handlers'
         )
 
     async def __listen_loop(
-            self,
-            event_strategy: SaEventStrategy,
+        self,
+        event_strategy: SaEventStrategy,
     ) -> None:
-        retry_delay = 2
-        log_interval = 30
         last_log_time = 0.0
         was_connected = False
 
         while not self._stop_event.is_set():
             try:
                 await self.__listen_once(event_strategy)
+
+                was_connected = True
 
             except asyncio.CancelledError:
                 raise
@@ -217,48 +265,62 @@ class SQLAlchemyEvents:
 
                 now = asyncio.get_running_loop().time()
 
-                if was_connected:
-                    was_connected = False
-                    last_log_time = now
-
-                elif (
-                        self.verbose
-                        and now - last_log_time >= log_interval
-                ):
-                    self.logger.warning(
-                        f'[SQLAlchemyEvents] '
-                        f'Unable to connect publisher: {ex}'
+                if (
+                    self.verbose
+                    and (
+                        last_log_time == 0.0
+                        or now - last_log_time >= self.LOG_INTERVAL
                     )
+                ):
+                    if was_connected:
+                        self.logger.warning(
+                            '[SQLAlchemyEvents] '
+                            f'Listener connection lost: {ex}'
+                        )
+                    else:
+                        self.logger.warning(
+                            '[SQLAlchemyEvents] '
+                            f'Unable to connect listener: {ex}'
+                        )
+
                     self.logger.warning(
                         '[SQLAlchemyEvents] '
-                        'Trying to connect publisher every 2 seconds...'
+                        'Trying to connect listener every '
+                        f'{self.RETRY_DELAY} seconds...'
                     )
 
                     last_log_time = now
+
+                was_connected = False
 
             if self._stop_event.is_set():
                 break
 
-            await self.engine.dispose()
-
             try:
                 await asyncio.wait_for(
                     self._stop_event.wait(),
-                    timeout=retry_delay,
+                    timeout=self.RETRY_DELAY,
                 )
             except asyncio.TimeoutError:
                 pass
 
         if self.verbose:
             self.logger.info(
-                '[SQLAlchemyEvents] Publisher stopped'
+                '[SQLAlchemyEvents] Listener stopped'
             )
 
     async def __listen_once(
         self,
         event_strategy: SaEventStrategy,
     ) -> None:
-        async with self.engine.connect() as conn:
+        listener_engine = self._listener_engine
+
+        if listener_engine is None:
+            raise RuntimeError(
+                '[SQLAlchemyEvents] Listener engine is not initialized'
+            )
+
+        async with listener_engine.connect() as conn:
             raw_conn = await conn.get_raw_connection()
             driver_conn = raw_conn.driver_connection
 
@@ -276,21 +338,28 @@ class SQLAlchemyEvents:
             driver_conn.add_termination_listener(
                 on_disconnect
             )
+
             listener_registered = False
+
             try:
                 await driver_conn.add_listener(
                     self.CHANNEL,
                     event_strategy.callback.handle,
                 )
+
                 listener_registered = True
+
                 if self.verbose:
                     self.logger.info(
-                        '[SQLAlchemyEvents] Publisher connected'
+                        '[SQLAlchemyEvents] Listener connected'
                     )
 
                 await disconnected.wait()
+
                 if not self._stop_event.is_set():
-                    raise ConnectionError('Database connection lost')
+                    raise ConnectionError(
+                        'Database connection lost'
+                    )
 
             finally:
                 driver_conn.remove_termination_listener(
@@ -326,8 +395,9 @@ class SQLAlchemyEvents:
             if inspect.isawaitable(result):
                 await result
 
-        except Exception as e:
+        except Exception as ex:
             if self.verbose:
                 self.logger.warning(
-                    f'[SQLAlchemyEvents] Failed to remove publisher: {e}',
+                    '[SQLAlchemyEvents] '
+                    f'Failed to remove listener: {ex}',
                 )
