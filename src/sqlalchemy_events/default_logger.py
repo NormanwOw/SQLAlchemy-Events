@@ -4,7 +4,9 @@ import logging
 class DefaultLogger:
     def __init__(self) -> None:
         self.__logger = logging.getLogger('SQLAlchemyEvents')
-        self.__logger.setLevel(logging.INFO)
+
+        if self.__logger.level == logging.NOTSET:
+            self.__logger.setLevel(logging.INFO)
 
         if not self.__logger.handlers:
             formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')

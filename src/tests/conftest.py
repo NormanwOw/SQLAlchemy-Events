@@ -1,55 +1,63 @@
+from __future__ import annotations
+
 import os
+from typing import Any
 
+import pytest
 import pytest_asyncio
-from dotenv import load_dotenv
-
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy import text
-from sqlalchemy_events import SQLAlchemyEvents
-from sqlalchemy_events.events import sa_events_strategy
-from sqlalchemy_events.utils import dialect_resolver
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from sqlalchemy_events import SQLAlchemyEvents
+from tests import handlers
 from tests.test_models import Base
 
-load_dotenv()
 DATABASE_URL = os.environ.get('DATABASE_URL')
 
 
 @pytest_asyncio.fixture
-async def engine():
-    engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
-    yield engine
-    await engine.dispose()
+async def engine() -> AsyncEngine:
+    if not DATABASE_URL:
+        pytest.skip('DATABASE_URL is not set')
 
-IS_DB = False
+    engine = create_async_engine(DATABASE_URL)
 
-
-@pytest_asyncio.fixture(autouse=True)
-async def prepared_db(engine):
-    global IS_DB
-    if not IS_DB:
-        async with engine.begin() as conn:
-            await conn.execute(text('DROP SCHEMA IF EXISTS public CASCADE'))
-            await conn.execute(text('CREATE SCHEMA public'))
-            await conn.run_sync(Base.metadata.create_all)
-
-        await SQLAlchemyEvents(
-            engine=engine,
-            autodiscover_paths=['tests']
-        )()
-        IS_DB = True
+    try:
+        yield engine
+    finally:
+        await engine.dispose()
 
 
 @pytest_asyncio.fixture
-async def session(engine):
-    async_session = async_sessionmaker(engine, expire_on_commit=False)
-
-    async with async_session() as session:
-        yield session
-        await session.rollback()
+async def db(engine: AsyncEngine) -> None:
+    async with engine.begin() as conn:
+        await conn.execute(text('DROP SCHEMA IF EXISTS public CASCADE'))
+        await conn.execute(text('CREATE SCHEMA public'))
+        await conn.run_sync(Base.metadata.create_all)
 
 
 @pytest_asyncio.fixture
-async def mock_callback(engine):
-    dialect = dialect_resolver(engine)
-    yield sa_events_strategy[dialect].callback
+async def events_factory(engine: AsyncEngine, db: None):
+    instances: list[SQLAlchemyEvents] = []
+
+    async def factory(**kwargs: Any) -> SQLAlchemyEvents:
+        kwargs.setdefault('verbose', False)
+        kwargs.setdefault('autodiscover_paths', ['tests.handlers'])
+
+        events = SQLAlchemyEvents(engine=engine, **kwargs)
+        await events.start()
+        instances.append(events)
+        return events
+
+    try:
+        yield factory
+    finally:
+        for instance in reversed(instances):
+            await instance.stop()
+
+
+@pytest.fixture(autouse=True)
+def clean_calls():
+    handlers.clear_calls()
+    yield
+    handlers.clear_calls()

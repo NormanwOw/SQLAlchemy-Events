@@ -1,25 +1,41 @@
+from __future__ import annotations
+
+import types
+from collections.abc import Iterable
+from typing import TypeVar
+
 from sqlalchemy.orm import DeclarativeBase
 
+from .exceptions import InvalidModelEventError
 from .types import SaEvent
 
+ModelT = TypeVar('ModelT', bound=type[DeclarativeBase])
 
-def with_events(events: list[SaEvent]):
-    if not isinstance(events, list) or not events:
-        raise RuntimeError('Events must be a list with at least one SeEvent element')
 
-    for e in events:
-        if not isinstance(e, SaEvent):
-            raise RuntimeError(f'Event must be a SaEvent instance, not {type(e)}')
+def with_events(events: Iterable[SaEvent]):
+    """Enable database CUD event tracking for a declarative model."""
 
-    def wrapper(cls):
-        if not issubclass(cls, DeclarativeBase):
-            raise RuntimeError('Model must inherit from DeclarativeBase')
-        cls.__events__ = set(events)
+    if isinstance(events, (str, bytes)):
+        raise InvalidModelEventError('Events must be an iterable of SaEvent values')
 
-        class Events:
-            for e in events:
-                locals()[e.name] = e.value
+    try:
+        event_list = list(events)
+    except TypeError as ex:
+        raise InvalidModelEventError('Events must be an iterable of SaEvent values') from ex
 
-        cls.events = Events
+    if not event_list:
+        raise InvalidModelEventError('Events must contain at least one SaEvent value')
+
+    for event in event_list:
+        if not isinstance(event, SaEvent):
+            raise InvalidModelEventError(f'Event must be a SaEvent instance, not {type(event)}')
+
+    def wrapper(cls: ModelT) -> ModelT:
+        if not isinstance(cls, type) or not issubclass(cls, DeclarativeBase):
+            raise InvalidModelEventError('Model must inherit from DeclarativeBase')
+
+        cls.__events__ = frozenset(event_list)
+        cls.events = types.SimpleNamespace(**{event.name: event.value for event in event_list})
         return cls
+
     return wrapper
