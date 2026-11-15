@@ -22,7 +22,7 @@ jobs:
           --health-cmd="pg_isready -U postgres"
           --health-interval=5s
           --health-timeout=5s
-          --health-retries=5
+          --health-retries=10
 
     env:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/test_db
@@ -40,25 +40,28 @@ jobs:
         run: pip install uv
 
       - name: Install dependencies
-        run: |
-          uv venv
-          uv sync --dev
-          source .venv/bin/activate
-          uv pip install pytest pytest-asyncio asyncpg python-dotenv
-      - name: Wait for Postgres
-        run: |
-          for i in {1..30}; do
-            if pg_isready -h localhost -p 5432 -U postgres; then
-              echo "Postgres is ready!"
-              exit 0
-            fi
-            echo "Waiting for postgres..."
-            sleep 1
-          done
-          echo "Postgres did not start in time"
-          exit 1
+        run: uv sync --dev
 
-      - name: Run tests
+      - name: Lint
+        run: uv run ruff check src
+
+      - name: Type check
+        run: uv run mypy src/sqlalchemy_events
+
+      - name: Run tests with coverage
         run: |
-          source .venv/bin/activate
-          pytest -v -s
+          uv run pytest \
+            --cov=sqlalchemy_events \
+            --cov-report=term-missing \
+            --cov-report=xml
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: coverage.xml
+          if-no-files-found: ignore
+
+      - name: Build package
+        run: uv build

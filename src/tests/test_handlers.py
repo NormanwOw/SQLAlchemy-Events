@@ -1,79 +1,141 @@
-import json
+from __future__ import annotations
+
 import pytest
 
-from sqlalchemy_events import sa_delete_handler, sa_insert_handler, sa_update_handler
-from tests.test_models import UserModel
-
-
-def test_invalid_model_in_handler():
-    with pytest.raises(RuntimeError):
-        @sa_insert_handler(object)
-        def test_func():
-            pass
-
-
-def test_handler_signature():
-    with pytest.raises(TypeError):
-        @sa_insert_handler()
-        def test_func():
-            pass
-
-
-class Test:
-    def test_method(self):
-        pass
-
-    @classmethod
-    def test_class_method(cls):
-        pass
-
-    @staticmethod
-    def test_static_method():
-        pass
-
-
-def test_handler_in_class():
-    with pytest.raises(RuntimeError):
-        sa_insert_handler(UserModel)(Test().test_method)
-
-    with pytest.raises(RuntimeError):
-        sa_update_handler(UserModel)(Test.test_class_method)
-
-
-@sa_insert_handler(UserModel)
-async def insert_user_handler(rows):
-    assert rows == [1, 2, 3]
-    return rows
-
-
-@sa_update_handler(UserModel)
-async def update_user_handler(rows):
-    assert rows == [4, 5, 6]
-    return rows
-
-
-@sa_delete_handler(UserModel)
-async def delete_user_handler(rows):
-    assert rows == [7, 8, 9]
-    return rows
-
-
-@pytest.mark.parametrize(
-    'op,rows,resp',
-    [
-        ('insert', [1, 2, 3], [None, [1, 2, 3]]),
-        ('update', [4, 5, 6], [None, [4, 5, 6]]),
-        ('delete', [7, 8, 9], [None, [7, 8, 9]]),
-    ]
+from sqlalchemy_events.exceptions import EventHandlerConfigurationError
+from sqlalchemy_events.execution import build_call_plan
+from sqlalchemy_events.handlers import (
+    sa_insert_handler,
 )
-async def test_handlers(mock_callback, op, rows, resp):
-    response = await mock_callback.handle(
-        None, None, None, json.dumps(
-            {
-                'op': op,
-                'table': 'users',
-                'rows': rows
-            }
-        )
+from sqlalchemy_events.registry import HandlerRegistry
+from sqlalchemy_events.types import SaEvent
+from tests.test_models import PlainModel, UserModel
+
+
+@pytest.fixture
+def registry(monkeypatch) -> HandlerRegistry:
+    registry = HandlerRegistry()
+
+    monkeypatch.setattr(
+        'sqlalchemy_events.handlers.get_event_handlers',
+        lambda: registry,
     )
-    assert response == resp
+
+    return registry
+
+
+def test_invalid_model(registry: HandlerRegistry) -> None:
+    with pytest.raises(EventHandlerConfigurationError):
+        sa_insert_handler(object)(lambda: None)
+
+
+def test_missing_tablename(registry: HandlerRegistry) -> None:
+    class NoTable(UserModel.__bases__[0]):
+        __abstract__ = True
+
+    with pytest.raises(EventHandlerConfigurationError):
+        sa_insert_handler(NoTable)(lambda: None)
+
+
+def test_instance_method_is_rejected_at_plan_time(
+    registry: HandlerRegistry,
+) -> None:
+    sa_insert_handler(UserModel)(InstanceService().method)
+
+    handler = registry.get_handlers(None, 'users', SaEvent.INSERT)[0]
+
+    with pytest.raises(EventHandlerConfigurationError):
+        build_call_plan(handler)
+
+
+def test_classmethod_is_supported(registry: HandlerRegistry) -> None:
+    sa_insert_handler(UserModel)(ClassmethodService.handler)
+
+    handler = registry.get_handlers(None, 'users', SaEvent.INSERT)[0]
+    plan = build_call_plan(handler)
+
+    assert plan.owner is ClassmethodService
+    assert plan.rows_mode == 'keyword'
+
+
+def test_nested_function_is_rejected(registry: HandlerRegistry) -> None:
+    def outer():
+        def inner() -> None:
+            pass
+
+        return inner
+
+    with pytest.raises(EventHandlerConfigurationError):
+        sa_insert_handler(UserModel)(outer())
+
+
+def test_required_parameter_is_rejected(registry: HandlerRegistry) -> None:
+    with pytest.raises(EventHandlerConfigurationError):
+        sa_insert_handler(UserModel)(invalid_required_handler)
+
+
+def static_handler(rows) -> None:
+    pass
+
+
+async def registered_handler(rows) -> None:
+    pass
+
+
+async def second_registered_handler(rows) -> None:
+    pass
+
+
+async def plain_registered_handler() -> None:
+    pass
+
+
+def invalid_required_handler(value) -> None:
+    pass
+
+
+class InstanceService:
+    def method(self) -> None:
+        pass
+
+
+class ClassmethodService:
+    @classmethod
+    async def handler(cls, rows) -> None:
+        pass
+
+
+def test_staticmethod_is_supported(registry: HandlerRegistry) -> None:
+    sa_insert_handler(UserModel)(staticmethod(static_handler))
+
+    handlers = registry.get_handlers(None, 'users', SaEvent.INSERT)
+    assert handlers
+    assert handlers[0].func is static_handler
+
+
+def test_handler_is_registered(registry: HandlerRegistry) -> None:
+    sa_insert_handler(UserModel)(registered_handler)
+
+    handlers = registry.get_handlers(None, 'users', SaEvent.INSERT)
+
+    assert len(handlers) == 1
+    assert handlers[0].func is registered_handler
+    assert handlers[0].event is SaEvent.INSERT
+    assert handlers[0].table == 'users'
+
+
+def test_two_handlers_for_same_event_are_kept(
+    registry: HandlerRegistry,
+) -> None:
+    sa_insert_handler(UserModel)(registered_handler)
+    sa_insert_handler(UserModel)(second_registered_handler)
+
+    assert len(registry.get_handlers(None, 'users', SaEvent.INSERT)) == 2
+
+
+def test_plain_model_is_allowed_by_decorator(
+    registry: HandlerRegistry,
+) -> None:
+    sa_insert_handler(PlainModel)(plain_registered_handler)
+
+    assert registry.get_handlers(None, 'plain', SaEvent.INSERT)

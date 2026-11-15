@@ -1,12 +1,14 @@
 import importlib
 import pkgutil
+from collections.abc import Iterable
 from pathlib import Path
 from types import ModuleType
-from typing import Iterable, List
+
+from .exceptions import HandlersDiscoveryError
 
 
-def autodiscover(paths: Iterable[str | Path]) -> List[ModuleType]:
-    modules: List[ModuleType] = []
+def autodiscover(paths: Iterable[str | Path]) -> list[ModuleType]:
+    modules: list[ModuleType] = []
     seen: set[str] = set()
 
     def add_module(module: ModuleType):
@@ -28,7 +30,11 @@ def autodiscover(paths: Iterable[str | Path]) -> List[ModuleType]:
 
         path = path.replace('\\', '.').replace('/', '.').lstrip('.')
 
-        module = importlib.import_module(path)
+        try:
+            module = importlib.import_module(path)
+        except ModuleNotFoundError as ex:
+            raise HandlersDiscoveryError(f'Cannot import handler module {path!r}: {ex}') from ex
+
         add_module(module)
 
         if is_file or not hasattr(module, '__path__'):
@@ -38,7 +44,13 @@ def autodiscover(paths: Iterable[str | Path]) -> List[ModuleType]:
             module.__path__,
             module.__name__ + '.',
         ):
-            submodule = importlib.import_module(module_name)
+            try:
+                submodule = importlib.import_module(module_name)
+            except ModuleNotFoundError as ex:
+                raise HandlersDiscoveryError(
+                    f'Cannot import handler module {module_name!r}: {ex}'
+                ) from ex
+
             add_module(submodule)
 
     return modules
